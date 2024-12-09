@@ -34,11 +34,4 @@ export const SUPPORTED_DEXES: DEXProtocol[] = [
     initCodeHash:
       "0xe18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303",
   },
-  {
-    name: "Shibaswap",
-    router: "0x03f7724180AA6b939894B5Ca4314783B0b36b329",
-    factory: "0x115934131916C8b277DD010Ee02de363c09d037c",
-    initCodeHash:
-      "0x65d1a3b1e46c6e4f1be1ad5f99ef14dc488ae0549dc97db9b30afe2241ce1c7a",
-  },
 ];

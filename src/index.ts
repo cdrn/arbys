@@ -7,6 +7,7 @@ dotenv.config();
 
 // Common tokens to monitor
 const TOKENS: { [key: string]: Token } = {
+  // Major tokens
   WETH: {
     address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
     symbol: "WETH",
@@ -25,6 +26,49 @@ const TOKENS: { [key: string]: Token } = {
   DAI: {
     address: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
     symbol: "DAI",
+    decimals: 18,
+  },
+  // DeFi tokens
+  UNI: {
+    address: "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
+    symbol: "UNI",
+    decimals: 18,
+  },
+  LINK: {
+    address: "0x514910771AF9Ca656af840dff83E8264EcF986CA",
+    symbol: "LINK",
+    decimals: 18,
+  },
+  AAVE: {
+    address: "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9",
+    symbol: "AAVE",
+    decimals: 18,
+  },
+  CRV: {
+    address: "0xD533a949740bb3306d119CC777fa900bA034cd52",
+    symbol: "CRV",
+    decimals: 18,
+  },
+  // Liquid staking tokens
+  STETH: {
+    address: "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
+    symbol: "stETH",
+    decimals: 18,
+  },
+  RETH: {
+    address: "0xae78736Cd615f374D3085123A210448E74Fc6393",
+    symbol: "rETH",
+    decimals: 18,
+  },
+  // Stablecoins
+  FRAX: {
+    address: "0x853d955aCEf822Db058eb8505911ED77F175b99e",
+    symbol: "FRAX",
+    decimals: 18,
+  },
+  LUSD: {
+    address: "0x5f98805A4E8be255a32880FDeC7F6728C6568bA0",
+    symbol: "LUSD",
     decimals: 18,
   },
 };
@@ -53,19 +97,46 @@ class ArbitrageBot {
 
     // Monitor major pairs
     const pairs = [
+      // Stablecoin pairs
+      [TOKENS.USDC, TOKENS.USDT],
+      [TOKENS.USDC, TOKENS.DAI],
+      [TOKENS.USDT, TOKENS.DAI],
+      [TOKENS.USDC, TOKENS.FRAX],
+      [TOKENS.USDC, TOKENS.LUSD],
+
+      // ETH pairs
       [TOKENS.WETH, TOKENS.USDC],
       [TOKENS.WETH, TOKENS.USDT],
       [TOKENS.WETH, TOKENS.DAI],
-      [TOKENS.USDC, TOKENS.USDT],
+      [TOKENS.WETH, TOKENS.STETH],
+      [TOKENS.WETH, TOKENS.RETH],
+
+      // DeFi blue chips
+      [TOKENS.WETH, TOKENS.UNI],
+      [TOKENS.WETH, TOKENS.LINK],
+      [TOKENS.WETH, TOKENS.AAVE],
+      [TOKENS.WETH, TOKENS.CRV],
+
+      // Stablecoin/DeFi pairs
+      [TOKENS.USDC, TOKENS.UNI],
+      [TOKENS.USDC, TOKENS.LINK],
+      [TOKENS.USDC, TOKENS.AAVE],
+      [TOKENS.USDC, TOKENS.CRV],
     ];
 
     for (const [tokenA, tokenB] of pairs) {
       try {
-        // Use 1 ETH as base amount for WETH pairs, or 1000 USDC for stablecoin pairs
-        const baseAmount =
-          tokenA.symbol === "WETH"
-            ? ethers.parseEther("1")
-            : ethers.parseUnits("1000", tokenA.decimals);
+        // Use appropriate base amount based on token type
+        let baseAmount: bigint;
+        if (tokenA.symbol === "WETH") {
+          baseAmount = ethers.parseEther("1"); // 1 ETH
+        } else if (tokenA.symbol.includes("ETH")) {
+          baseAmount = ethers.parseEther("1"); // 1 LST
+        } else if (tokenA.decimals === 6) {
+          baseAmount = ethers.parseUnits("1000", 6); // 1000 USDC/USDT
+        } else {
+          baseAmount = ethers.parseUnits("1000", 18); // 1000 DAI/other
+        }
 
         const arbitrage = await this.dexService.findArbitrage(
           tokenA,

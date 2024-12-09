@@ -1,7 +1,9 @@
 import { ethers } from "ethers";
 import dotenv from "dotenv";
 import { DexService } from "./services/dex";
+import { CEXService } from "./services/cex";
 import { Token } from "./types/dex";
+import { logArb, logError, logInfo, logDebug } from "./utils/logger";
 
 dotenv.config();
 
@@ -79,6 +81,7 @@ function getEtherscanLink(address: string): string {
 
 class ArbitrageBot {
   private dexService: DexService;
+  private cexService: CEXService;
   private provider: ethers.JsonRpcProvider;
 
   constructor() {
@@ -90,10 +93,11 @@ class ArbitrageBot {
 
     this.provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
     this.dexService = new DexService(this.provider, process.env.PRIVATE_KEY);
+    this.cexService = new CEXService();
   }
 
   async monitorPrices() {
-    console.log("\nMonitoring prices across DEXes...");
+    logInfo("Monitoring prices across DEXes and CEXes...");
 
     // Monitor major pairs
     const pairs = [
@@ -126,71 +130,150 @@ class ArbitrageBot {
 
     for (const [tokenA, tokenB] of pairs) {
       try {
-        // Use appropriate base amount based on token type
-        let baseAmount: bigint;
-        if (tokenA.symbol === "WETH") {
-          baseAmount = ethers.parseEther("1"); // 1 ETH
-        } else if (tokenA.symbol.includes("ETH")) {
-          baseAmount = ethers.parseEther("1"); // 1 LST
-        } else if (tokenA.decimals === 6) {
-          baseAmount = ethers.parseUnits("1000", 6); // 1000 USDC/USDT
-        } else {
-          baseAmount = ethers.parseUnits("1000", 18); // 1000 DAI/other
-        }
-
-        const arbitrage = await this.dexService.findArbitrage(
+        // Get DEX prices
+        const dexArbitrage = await this.dexService.findArbitrage(
           tokenA,
           tokenB,
-          baseAmount
+          this.getBaseAmount(tokenA)
         );
 
-        if (arbitrage) {
-          console.log(
-            `\nFound arbitrage opportunity for ${tokenA.symbol}/${tokenB.symbol}:`
+        // Get CEX prices if it's a major pair
+        if (this.isMajorPair(tokenA, tokenB)) {
+          const symbol = this.getCEXSymbol(tokenA, tokenB);
+          if (symbol) {
+            const cexPrices = await this.cexService.getAllPrices(symbol);
+
+            if (dexArbitrage) {
+              const dexPrice = Number(
+                ethers.formatUnits(
+                  dexArbitrage.route[0].outputAmount,
+                  tokenB.decimals
+                )
+              );
+
+              const cexArbitrage = this.cexService.findArbitrage(
+                dexPrice,
+                cexPrices
+              );
+
+              if (cexArbitrage) {
+                logArb(
+                  `Found CEX arbitrage opportunity for ${tokenA.symbol}/${tokenB.symbol}:`
+                );
+                logArb(`${cexArbitrage.direction}`);
+                logArb(`Profit: ${cexArbitrage.profitPercent.toFixed(2)}%`);
+                logArb(`CEX: ${cexArbitrage.cex}`);
+              }
+            }
+          }
+        }
+
+        // Original DEX arbitrage logic
+        if (dexArbitrage) {
+          logArb(
+            `Found DEX arbitrage opportunity for ${tokenA.symbol}/${tokenB.symbol}:`
           );
-          console.log(
+          logArb(
             `Required capital: ${ethers.formatUnits(
-              arbitrage.requiredCapital,
+              dexArbitrage.requiredCapital,
               tokenA.decimals
             )} ${tokenA.symbol}`
           );
-          console.log(
+          logArb(
             `Expected profit: ${ethers.formatUnits(
-              arbitrage.profit,
+              dexArbitrage.profit,
               tokenB.decimals
             )} ${tokenB.symbol}`
           );
-          console.log(
-            `Profit percentage: ${arbitrage.profitPercentage.toFixed(2)}%`
+          logArb(
+            `Profit percentage: ${dexArbitrage.profitPercentage.toFixed(2)}%`
           );
-          console.log(
+          logArb(
             `Estimated gas cost: ${ethers.formatEther(
-              arbitrage.estimatedGasCost
+              dexArbitrage.estimatedGasCost
             )} ETH`
           );
-          console.log(
-            `Route: ${arbitrage.route.map((q) => q.dexName).join(" -> ")}`
+          logArb(
+            `Route: ${dexArbitrage.route.map((q) => q.dexName).join(" -> ")}`
           );
 
-          // Only execute if profit is significant (e.g., > 0.5%)
-          if (arbitrage.profitPercentage > 0.5) {
+          if (dexArbitrage.profitPercentage > 0.5) {
             await this.executeArbitrage(
               tokenA,
               tokenB,
-              baseAmount,
-              arbitrage.route
+              this.getBaseAmount(tokenA),
+              dexArbitrage.route
             );
           } else {
-            console.log("Skipping execution - profit too small");
+            logInfo("Skipping execution - profit too small");
           }
         }
       } catch (error) {
-        console.error(
-          `Error monitoring ${tokenA.symbol}/${tokenB.symbol}:`,
-          error
-        );
+        logError(`Error monitoring ${tokenA.symbol}/${tokenB.symbol}`, error);
       }
     }
+  }
+
+  private getBaseAmount(token: Token): bigint {
+    if (token.symbol === "WETH") {
+      return ethers.parseEther("1"); // 1 ETH
+    } else if (token.symbol.includes("ETH")) {
+      return ethers.parseEther("1"); // 1 LST
+    } else if (token.decimals === 6) {
+      return ethers.parseUnits("1000", 6); // 1000 USDC/USDT
+    } else {
+      return ethers.parseUnits("1000", 18); // 1000 DAI/other
+    }
+  }
+
+  private isMajorPair(tokenA: Token, tokenB: Token): boolean {
+    // Check if both tokens are in our symbol map
+    return this.getCEXSymbol(tokenA, tokenB) !== null;
+  }
+
+  private getCEXSymbol(tokenA: Token, tokenB: Token): string | null {
+    // Convert our tokens to Binance symbols
+    const symbolMap: { [key: string]: string } = {
+      WETH: "ETH",
+      USDC: "USDC",
+      USDT: "USDT",
+      DAI: "DAI",
+      UNI: "UNI",
+      LINK: "LINK",
+      AAVE: "AAVE",
+      CRV: "CRV",
+      STETH: "STETH",
+      RETH: "RETH",
+      FRAX: "FRAX",
+      LUSD: "LUSD",
+    };
+
+    const baseSymbol = symbolMap[tokenA.symbol];
+    const quoteSymbol = symbolMap[tokenB.symbol];
+
+    // Only return if both symbols are mapped
+    if (!baseSymbol || !quoteSymbol) {
+      return null;
+    }
+
+    // Common Binance pairs
+    const validPairs = [
+      "ETHUSDT",
+      "ETHUSDC",
+      "ETHDAI",
+      "UNIUSDT",
+      "UNIUSDC",
+      "LINKUSDT",
+      "LINKUSDC",
+      "AAVEUSDT",
+      "AAVEUSDC",
+      "CRVUSDT",
+      "CRVUSDC",
+      "USDCUSDT",
+    ];
+
+    const pair = `${baseSymbol}${quoteSymbol}`;
+    return validPairs.includes(pair) ? pair : null;
   }
 
   private async executeArbitrage(
@@ -200,37 +283,37 @@ class ArbitrageBot {
     route: any[]
   ) {
     try {
-      console.log("\nExecuting arbitrage trade...");
+      logInfo("\nExecuting arbitrage trade...");
       const txHash = await this.dexService.executeArbitrage(
         tokenA,
         tokenB,
         amount,
         route
       );
-      console.log(`Arbitrage executed! Transaction: ${txHash}`);
+      logInfo(`Arbitrage executed! Transaction: ${txHash}`);
     } catch (error) {
-      console.error("Error executing arbitrage:", error);
+      logError("Error executing arbitrage:", error);
     }
   }
 }
 
 async function main() {
-  console.log("\n🥪 Starting arby's arbitrage bot...\n");
+  logInfo("\n🥪 Starting arby's arbitrage bot...\n");
 
   // Print monitored tokens
-  console.log("Monitored tokens:");
+  logInfo("Monitored tokens:");
   Object.entries(TOKENS).forEach(([symbol, token]) => {
-    console.log(`${symbol}: ${token.address}`);
-    console.log(`Etherscan: ${getEtherscanLink(token.address)}`);
-    console.log(`Decimals: ${token.decimals}\n`);
+    logInfo(`${symbol}: ${token.address}`);
+    logDebug(`Etherscan: ${getEtherscanLink(token.address)}`);
+    logDebug(`Decimals: ${token.decimals}\n`);
   });
 
   // Print monitored pairs
-  console.log("Monitoring pairs:");
-  console.log("- WETH/USDC");
-  console.log("- WETH/USDT");
-  console.log("- WETH/DAI");
-  console.log("- USDC/USDT\n");
+  logInfo("Monitoring pairs:");
+  logInfo("- WETH/USDC");
+  logInfo("- WETH/USDT");
+  logInfo("- WETH/DAI");
+  logInfo("- USDC/USDT\n");
 
   const bot = new ArbitrageBot();
 
@@ -241,7 +324,7 @@ async function main() {
       await new Promise((resolve) => setTimeout(resolve, 12000));
     }
   } catch (error) {
-    console.error("Error in main loop:", error);
+    logError("Error in main loop", error);
   }
 }
 

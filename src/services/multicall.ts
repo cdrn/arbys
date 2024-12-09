@@ -13,6 +13,10 @@ const ROUTER_INTERFACE = new Interface([
   "function getAmountsOut(uint amountIn, address[] memory path) view returns (uint[] memory amounts)",
 ]);
 
+const QUOTER_INTERFACE = new Interface([
+  "function quoteExactInputSingle(address tokenIn, address tokenOut, uint24 fee, uint256 amountIn, uint160 sqrtPriceLimitX96) external returns (uint256 amountOut)",
+]);
+
 const PAIR_INTERFACE = new Interface([
   "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
 ]);
@@ -76,13 +80,29 @@ export class MulticallService {
     routerAddress: string,
     tokenA: string,
     tokenB: string,
-    amountIn: bigint
+    amountIn: bigint,
+    isV3?: boolean,
+    fee?: number
   ): MulticallRequest {
     try {
-      const callData = ROUTER_INTERFACE.encodeFunctionData("getAmountsOut", [
-        amountIn,
-        [tokenA, tokenB],
-      ]);
+      let callData;
+      if (isV3 && fee !== undefined) {
+        callData = QUOTER_INTERFACE.encodeFunctionData(
+          "quoteExactInputSingle",
+          [
+            tokenA,
+            tokenB,
+            fee,
+            amountIn,
+            0, // No price limit
+          ]
+        );
+      } else {
+        callData = ROUTER_INTERFACE.encodeFunctionData("getAmountsOut", [
+          amountIn,
+          [tokenA, tokenB],
+        ]);
+      }
 
       return {
         target: routerAddress,
@@ -95,19 +115,27 @@ export class MulticallService {
     }
   }
 
-  decodePairPriceResult(returnData: string): bigint[] | null {
+  decodePairPriceResult(returnData: string, isV3?: boolean): bigint[] | null {
     if (!returnData || returnData === "0x") {
       return null;
     }
 
     try {
-      const decoded = ROUTER_INTERFACE.decodeFunctionResult(
-        "getAmountsOut",
-        returnData
-      );
-      return decoded[0].map((amount: ethers.BigNumberish) =>
-        BigInt(amount.toString())
-      );
+      if (isV3) {
+        const decoded = QUOTER_INTERFACE.decodeFunctionResult(
+          "quoteExactInputSingle",
+          returnData
+        );
+        return [BigInt(decoded[0].toString())];
+      } else {
+        const decoded = ROUTER_INTERFACE.decodeFunctionResult(
+          "getAmountsOut",
+          returnData
+        );
+        return decoded[0].map((amount: ethers.BigNumberish) =>
+          BigInt(amount.toString())
+        );
+      }
     } catch (error) {
       logError(
         `Failed to decode price result: ${

@@ -33,29 +33,35 @@ export class DexService {
     estimatedGasCost: bigint;
   } | null> {
     try {
-      // Create multicall requests for all DEX price checks
-      const priceChecks = SUPPORTED_DEXES.map((dex) =>
+      // Create all price check calls at once
+      const priceChecks = SUPPORTED_DEXES.flatMap((dex) => [
         this.multicallService.createPairPriceCall(
           dex.router,
           tokenA.address,
           tokenB.address,
           amount
-        )
-      );
+        ),
+        this.multicallService.createPairPriceCall(
+          dex.router,
+          tokenB.address,
+          tokenA.address,
+          amount
+        ),
+      ]);
 
       // Execute all price checks in one multicall
       const priceResults = await this.multicallService.multicall(priceChecks);
 
       // Process results and create quotes
       const quotes: PriceQuote[] = [];
+      for (let i = 0; i < priceResults.length; i += 2) {
+        const dex = SUPPORTED_DEXES[Math.floor(i / 2)];
+        const forwardResult = priceResults[i];
+        const reverseResult = priceResults[i + 1];
 
-      for (let i = 0; i < SUPPORTED_DEXES.length; i++) {
-        const dex = SUPPORTED_DEXES[i];
-        const result = priceResults[i];
-
-        if (result.success) {
+        if (forwardResult.success) {
           const amounts = this.multicallService.decodePairPriceResult(
-            result.returnData
+            forwardResult.returnData
           );
           if (amounts && amounts.length >= 2) {
             quotes.push({
@@ -63,46 +69,32 @@ export class DexService {
               inputAmount: amounts[0],
               outputAmount: amounts[1],
               path: [tokenA.address, tokenB.address],
-              estimatedGas: BigInt(300000), // Estimated gas, can be refined
+              estimatedGas: BigInt(300000), // Estimated gas cost
+            });
+          }
+        }
+
+        if (reverseResult.success) {
+          const amounts = this.multicallService.decodePairPriceResult(
+            reverseResult.returnData
+          );
+          if (amounts && amounts.length >= 2) {
+            quotes.push({
+              dexName: dex.name,
+              inputAmount: amounts[0],
+              outputAmount: amounts[1],
+              path: [tokenB.address, tokenA.address],
+              estimatedGas: BigInt(300000), // Estimated gas cost
             });
           }
         }
       }
 
-      // Check liquidity for valid quotes
-      const liquidityChecks = quotes.map((quote) =>
-        this.multicallService.createPairLiquidityCall(
-          // Calculate pair address - this is a simplified version, might need adjustment
-          ethers.getCreate2Address(
-            quote.dexName === "Uniswap V2"
-              ? SUPPORTED_DEXES[0].factory
-              : SUPPORTED_DEXES[1].factory,
-            ethers.keccak256(
-              ethers.solidityPacked(
-                ["address", "address"],
-                [quote.path[0], quote.path[1]]
-              )
-            ),
-            quote.dexName === "Uniswap V2"
-              ? SUPPORTED_DEXES[0].initCodeHash
-              : SUPPORTED_DEXES[1].initCodeHash
-          )
-        )
+      // Filter valid quotes and find best arbitrage opportunity
+      const validQuotes = quotes.filter(
+        (quote) => quote.outputAmount > 0n && quote.inputAmount > 0n
       );
 
-      const liquidityResults = await this.multicallService.multicall(
-        liquidityChecks
-      );
-
-      // Filter quotes based on liquidity
-      const validQuotes = quotes.filter((quote, i) => {
-        const liquidity = this.multicallService.decodePairLiquidityResult(
-          liquidityResults[i].returnData
-        );
-        return liquidity && liquidity.reserve0 > 0n && liquidity.reserve1 > 0n;
-      });
-
-      // Find best arbitrage opportunity
       let bestProfit = 0n;
       let bestRoute: PriceQuote[] = [];
 

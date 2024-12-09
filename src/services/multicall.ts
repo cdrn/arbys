@@ -1,12 +1,11 @@
 import { ethers } from "ethers";
 import { Interface } from "@ethersproject/abi";
-import { logDebug, logError, logInfo } from "../utils/logger";
+import { logError, logInfo } from "../utils/logger";
 
 // Multicall3 contract on Ethereum mainnet
 const MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11";
 
 const MULTICALL3_ABI = [
-  "function aggregate3Static(tuple(address target, bool allowFailure, bytes callData)[] calls) view returns (tuple(bool success, bytes returnData)[])",
   "function tryAggregate(bool requireSuccess, tuple(address target, bytes callData)[] calls) view returns (tuple(bool success, bytes returnData)[])",
 ];
 
@@ -52,41 +51,22 @@ export class MulticallService {
 
   async multicall(calls: MulticallRequest[]): Promise<MulticallResult[]> {
     try {
-      logDebug(`Executing multicall with ${calls.length} calls`);
-
-      // Convert to simpler tryAggregate format
       const simplifiedCalls = calls.map((call) => ({
         target: call.target,
         callData: call.callData,
       }));
 
-      // Use tryAggregate instead of aggregate3Static for better compatibility
       const results = await this.contract.tryAggregate(false, simplifiedCalls);
 
-      const typedResults: MulticallResult[] = results.map(
-        (result: any, index: number) => {
-          if (!result.success) {
-            logError(
-              `Multicall request failed - Target: ${calls[index].target}, Index: ${index}, Data: ${result.returnData}`
-            );
-          } else {
-            logDebug(
-              `Multicall request succeeded - Target: ${calls[index].target}, Index: ${index}`
-            );
-          }
-          return {
-            success: result.success,
-            returnData: result.returnData,
-          };
-        }
-      );
-
-      return typedResults;
+      return results.map((result: any) => ({
+        success: result.success,
+        returnData: result.returnData,
+      }));
     } catch (error) {
       logError(
         `Multicall execution failed: ${
           error instanceof Error ? error.message : "Unknown error"
-        } (${calls.length} calls)`
+        }`
       );
       throw error;
     }
@@ -104,26 +84,19 @@ export class MulticallService {
         [tokenA, tokenB],
       ]);
 
-      logDebug(
-        `Creating price call - Router: ${routerAddress}, Path: ${tokenA} -> ${tokenB}, Amount: ${amountIn.toString()}`
-      );
-
       return {
         target: routerAddress,
         allowFailure: true,
         callData,
       };
     } catch (error) {
-      logError(
-        `Failed to create pair price call - Router: ${routerAddress}, TokenA: ${tokenA}, TokenB: ${tokenB}, AmountIn: ${amountIn.toString()}`
-      );
+      logError(`Failed to create price call - Router: ${routerAddress}`);
       throw error;
     }
   }
 
   decodePairPriceResult(returnData: string): bigint[] | null {
     if (!returnData || returnData === "0x") {
-      logDebug(`Empty return data for price check: ${returnData}`);
       return null;
     }
 
@@ -132,20 +105,14 @@ export class MulticallService {
         "getAmountsOut",
         returnData
       );
-      const amounts = decoded[0].map((amount: ethers.BigNumberish) =>
+      return decoded[0].map((amount: ethers.BigNumberish) =>
         BigInt(amount.toString())
       );
-      logDebug(
-        `Successfully decoded price result: ${amounts
-          .map((amount: bigint) => amount.toString())
-          .join(", ")}`
-      );
-      return amounts;
     } catch (error) {
       logError(
         `Failed to decode price result: ${
           error instanceof Error ? error.message : "Unknown error"
-        }, Data: ${returnData}`
+        }`
       );
       return null;
     }
@@ -153,14 +120,10 @@ export class MulticallService {
 
   createPairLiquidityCall(pairAddress: string): MulticallRequest {
     try {
-      const callData = PAIR_INTERFACE.encodeFunctionData("getReserves", []);
-
-      logDebug(`Creating liquidity call for pair: ${pairAddress}`);
-
       return {
         target: pairAddress,
         allowFailure: true,
-        callData,
+        callData: PAIR_INTERFACE.encodeFunctionData("getReserves", []),
       };
     } catch (error) {
       logError(`Failed to create liquidity call for pair: ${pairAddress}`);
@@ -172,7 +135,6 @@ export class MulticallService {
     returnData: string
   ): { reserve0: bigint; reserve1: bigint } | null {
     if (!returnData || returnData === "0x") {
-      logDebug(`Empty return data for liquidity check: ${returnData}`);
       return null;
     }
 
@@ -181,19 +143,15 @@ export class MulticallService {
         "getReserves",
         returnData
       );
-      const result = {
+      return {
         reserve0: BigInt(decoded.reserve0.toString()),
         reserve1: BigInt(decoded.reserve1.toString()),
       };
-      logDebug(
-        `Successfully decoded liquidity - Reserve0: ${result.reserve0.toString()}, Reserve1: ${result.reserve1.toString()}`
-      );
-      return result;
     } catch (error) {
       logError(
         `Failed to decode liquidity result: ${
           error instanceof Error ? error.message : "Unknown error"
-        }, Data: ${returnData}`
+        }`
       );
       return null;
     }

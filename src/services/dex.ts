@@ -17,12 +17,17 @@ const PAIR_ABI = [
   "function token1() external view returns (address)",
 ];
 
+const MAX_PROFIT_THRESHOLD = 30; // 30% max profit threshold
+const MIN_LIQUIDITY_USD = 10000n; // $10k minimum liquidity
+const MAX_PRICE_IMPACT = 2; // 2% max price impact
+
 export interface ArbitrageOpportunity {
   profit: bigint;
   route: PriceQuote[];
   requiredCapital: bigint;
   profitPercentage: number;
   estimatedGasCost: bigint;
+  priceImpact: number;
 }
 
 interface PoolInfo {
@@ -30,6 +35,7 @@ interface PoolInfo {
   reserve1: bigint;
   token0: string;
   token1: string;
+  pairAddress: string;
 }
 
 export class DexService {
@@ -39,6 +45,10 @@ export class DexService {
   constructor(provider: ethers.JsonRpcProvider, privateKey: string) {
     this.provider = provider;
     this.wallet = new ethers.Wallet(privateKey, provider);
+  }
+
+  private formatReserve(amount: bigint, decimals: number): string {
+    return ethers.formatUnits(amount, decimals);
   }
 
   private async getPoolInfo(
@@ -66,11 +76,37 @@ export class DexService {
       const token0 = await pair.token0();
       const token1 = await pair.token1();
 
+      // Log pool reserves
+      const token0Decimals =
+        token0.toLowerCase() === tokenA.address.toLowerCase()
+          ? tokenA.decimals
+          : tokenB.decimals;
+      const token1Decimals =
+        token1.toLowerCase() === tokenA.address.toLowerCase()
+          ? tokenB.decimals
+          : tokenA.decimals;
+      console.log(`\n${dex.name} Pool (${pairAddress}):`);
+      console.log(
+        `Reserve0: ${this.formatReserve(reserve0, token0Decimals)} ${
+          token0.toLowerCase() === tokenA.address.toLowerCase()
+            ? tokenA.symbol
+            : tokenB.symbol
+        }`
+      );
+      console.log(
+        `Reserve1: ${this.formatReserve(reserve1, token1Decimals)} ${
+          token1.toLowerCase() === tokenA.address.toLowerCase()
+            ? tokenA.symbol
+            : tokenB.symbol
+        }`
+      );
+
       return {
         reserve0,
         reserve1,
         token0,
         token1,
+        pairAddress,
       };
     } catch (error) {
       console.error(`Error getting pool info for ${dex.name}:`, error);
@@ -78,18 +114,70 @@ export class DexService {
     }
   }
 
+  private calculatePriceImpact(
+    amountIn: bigint,
+    reserveIn: bigint,
+    reserveOut: bigint
+  ): number {
+    // Using constant product formula (x * y = k)
+    const amountInWithFee = amountIn * 997n; // 0.3% fee
+    const numerator = amountInWithFee * reserveOut;
+    const denominator = reserveIn * 1000n + amountInWithFee;
+    const amountOut = numerator / denominator;
+
+    // Calculate price impact
+    const exactQuote = (amountIn * reserveOut) / reserveIn;
+    const priceImpact =
+      (Number(exactQuote - amountOut) / Number(exactQuote)) * 100;
+    return priceImpact;
+  }
+
   private hasEnoughLiquidity(
     poolInfo: PoolInfo,
-    tokenAddress: string,
+    tokenA: Token,
+    tokenB: Token,
     amount: bigint
   ): boolean {
-    const reserve =
-      poolInfo.token0.toLowerCase() === tokenAddress.toLowerCase()
-        ? poolInfo.reserve0
-        : poolInfo.reserve1;
+    const isToken0A =
+      poolInfo.token0.toLowerCase() === tokenA.address.toLowerCase();
+    const reserveA = isToken0A ? poolInfo.reserve0 : poolInfo.reserve1;
+    const reserveB = isToken0A ? poolInfo.reserve1 : poolInfo.reserve0;
 
-    // Check if pool has at least 2x the amount we want to trade
-    return reserve > amount * 2n;
+    // Calculate rough USD value of reserves (assuming tokenB is a stablecoin)
+    const reserveUsdValue = tokenB.symbol.includes("USD")
+      ? reserveB
+      : reserveB * 1500n; // Rough ETH price estimate for non-USD pairs
+
+    // Check minimum liquidity
+    if (reserveUsdValue < MIN_LIQUIDITY_USD) {
+      console.log(
+        `Insufficient USD liquidity: $${ethers.formatUnits(
+          reserveUsdValue,
+          tokenB.decimals
+        )}`
+      );
+      return false;
+    }
+
+    // Check if pool has enough of tokenA
+    if (reserveA < amount * 3n) {
+      console.log(
+        `Insufficient ${tokenA.symbol} liquidity: ${this.formatReserve(
+          reserveA,
+          tokenA.decimals
+        )} < ${this.formatReserve(amount * 3n, tokenA.decimals)}`
+      );
+      return false;
+    }
+
+    // Calculate price impact
+    const priceImpact = this.calculatePriceImpact(amount, reserveA, reserveB);
+    if (priceImpact > MAX_PRICE_IMPACT) {
+      console.log(`Price impact too high: ${priceImpact.toFixed(2)}%`);
+      return false;
+    }
+
+    return true;
   }
 
   async getPriceQuotes(
@@ -106,10 +194,7 @@ export class DexService {
         if (!poolInfo) continue;
 
         // Check if pool has enough liquidity
-        if (!this.hasEnoughLiquidity(poolInfo, tokenIn.address, amountIn)) {
-          console.log(
-            `Insufficient liquidity in ${dex.name} for ${tokenIn.symbol}/${tokenOut.symbol}`
-          );
+        if (!this.hasEnoughLiquidity(poolInfo, tokenIn, tokenOut, amountIn)) {
           continue;
         }
 
@@ -127,21 +212,31 @@ export class DexService {
           ]),
         ]);
 
-        // Sanity check: if output amount is too good to be true (>10% profit), skip it
+        // Calculate profit percentage
         const outputAmount = amounts[1];
         const profitPercentage =
           Number((outputAmount * 10000n) / amountIn) / 100 - 100;
-        if (profitPercentage > 10) {
+
+        if (profitPercentage > MAX_PROFIT_THRESHOLD) {
           console.log(
-            `Skipping suspicious price on ${dex.name}: ${profitPercentage}% profit seems too good to be true`
+            `Skipping suspicious price on ${
+              dex.name
+            }: ${profitPercentage.toFixed(2)}% profit seems too high`
           );
           continue;
         }
 
+        console.log(
+          `${dex.name} quote: ${this.formatReserve(
+            outputAmount,
+            tokenOut.decimals
+          )} ${tokenOut.symbol} (${profitPercentage.toFixed(2)}% profit)`
+        );
+
         quotes.push({
           dexName: dex.name,
           inputAmount: amountIn,
-          outputAmount: amounts[1],
+          outputAmount,
           path: [tokenIn.address, tokenOut.address],
           estimatedGas,
         });
@@ -198,6 +293,7 @@ export class DexService {
         requiredCapital: bestBuy.inputAmount,
         profitPercentage,
         estimatedGasCost: gasCostInEth,
+        priceImpact: 0,
       };
     }
 

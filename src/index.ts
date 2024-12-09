@@ -29,6 +29,10 @@ const TOKENS: { [key: string]: Token } = {
   },
 };
 
+function getEtherscanLink(address: string): string {
+  return `https://etherscan.io/token/${address}`;
+}
+
 class ArbitrageBot {
   private dexService: DexService;
   private provider: ethers.JsonRpcProvider;
@@ -45,7 +49,7 @@ class ArbitrageBot {
   }
 
   async monitorPrices() {
-    console.log("Monitoring prices across DEXes...");
+    console.log("\nMonitoring prices across DEXes...");
 
     // Monitor major pairs
     const pairs = [
@@ -71,23 +75,43 @@ class ArbitrageBot {
 
         if (arbitrage) {
           console.log(
-            `Found arbitrage opportunity for ${tokenA.symbol}/${tokenB.symbol}:`
+            `\nFound arbitrage opportunity for ${tokenA.symbol}/${tokenB.symbol}:`
           );
           console.log(
-            `Profit: ${ethers.formatUnits(arbitrage.profit, tokenB.decimals)} ${
-              tokenB.symbol
-            }`
+            `Required capital: ${ethers.formatUnits(
+              arbitrage.requiredCapital,
+              tokenA.decimals
+            )} ${tokenA.symbol}`
+          );
+          console.log(
+            `Expected profit: ${ethers.formatUnits(
+              arbitrage.profit,
+              tokenB.decimals
+            )} ${tokenB.symbol}`
+          );
+          console.log(
+            `Profit percentage: ${arbitrage.profitPercentage.toFixed(2)}%`
+          );
+          console.log(
+            `Estimated gas cost: ${ethers.formatEther(
+              arbitrage.estimatedGasCost
+            )} ETH`
           );
           console.log(
             `Route: ${arbitrage.route.map((q) => q.dexName).join(" -> ")}`
           );
 
-          await this.executeArbitrage(
-            tokenA,
-            tokenB,
-            baseAmount,
-            arbitrage.route
-          );
+          // Only execute if profit is significant (e.g., > 0.5%)
+          if (arbitrage.profitPercentage > 0.5) {
+            await this.executeArbitrage(
+              tokenA,
+              tokenB,
+              baseAmount,
+              arbitrage.route
+            );
+          } else {
+            console.log("Skipping execution - profit too small");
+          }
         }
       } catch (error) {
         console.error(
@@ -105,7 +129,7 @@ class ArbitrageBot {
     route: any[]
   ) {
     try {
-      console.log("Executing arbitrage trade...");
+      console.log("\nExecuting arbitrage trade...");
       const txHash = await this.dexService.executeArbitrage(
         tokenA,
         tokenB,
@@ -120,6 +144,23 @@ class ArbitrageBot {
 }
 
 async function main() {
+  console.log("\n🥪 Starting arby's arbitrage bot...\n");
+
+  // Print monitored tokens
+  console.log("Monitored tokens:");
+  Object.entries(TOKENS).forEach(([symbol, token]) => {
+    console.log(`${symbol}: ${token.address}`);
+    console.log(`Etherscan: ${getEtherscanLink(token.address)}`);
+    console.log(`Decimals: ${token.decimals}\n`);
+  });
+
+  // Print monitored pairs
+  console.log("Monitoring pairs:");
+  console.log("- WETH/USDC");
+  console.log("- WETH/USDT");
+  console.log("- WETH/DAI");
+  console.log("- USDC/USDT\n");
+
   const bot = new ArbitrageBot();
 
   try {

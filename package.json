@@ -6,8 +6,9 @@
   "private": true,
   "scripts": {
     "start": "ts-node src/index.ts",
+    "dev": "ts-node-dev --respawn --transpile-only --watch src src/index.ts",
     "build": "tsc",
-    "dev": "ts-node-dev --respawn src/index.ts"
+    "prod": "ts-node src/index.ts"
   },
   "dependencies": {
     "ethers": "^6.7.1",

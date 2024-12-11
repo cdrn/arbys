@@ -37,6 +37,16 @@ export class UniswapV2Handler extends BaseDexHandler {
     amount: bigint
   ): Promise<PriceQuote[]> {
     const quotes: PriceQuote[] = [];
+
+    // Check cache first
+    const cacheKey = this.getCacheKey(tokenA.address, tokenB.address);
+    if (this.nonExistentPools.has(cacheKey)) {
+      logInfo(
+        `Skipping known non-existent pair ${tokenA.symbol}/${tokenB.symbol} on ${this.dex.name}`
+      );
+      return quotes;
+    }
+
     const pairAddress = await this.getPairAddress(
       tokenA.address,
       tokenB.address
@@ -48,6 +58,8 @@ export class UniswapV2Handler extends BaseDexHandler {
       logInfo(
         `No V2 pair exists for ${tokenA.symbol}/${tokenB.symbol} on ${this.dex.name}`
       );
+      // Cache the non-existent pair
+      this.nonExistentPools.add(cacheKey);
       return quotes;
     }
 
@@ -78,12 +90,19 @@ export class UniswapV2Handler extends BaseDexHandler {
         results[0].returnData
       );
       if (amounts && amounts.length >= 2 && amounts[1] > 0n) {
+        const price = Number(amounts[1]) / Number(amounts[0]);
+        logInfo(
+          `${tokenA.symbol}->${tokenB.symbol} on ${
+            this.dex.name
+          } (${pairAddress}): ${price.toFixed(6)}`
+        );
         quotes.push({
-          dexName: this.dex.name,
+          dexName: `${this.dex.name} (0.30%)`,
           inputAmount: amounts[0],
           outputAmount: amounts[1],
           path: [tokenA.address, tokenB.address],
           estimatedGas: BigInt(300000),
+          poolAddress: pairAddress,
         });
       }
     }
@@ -94,12 +113,19 @@ export class UniswapV2Handler extends BaseDexHandler {
         results[1].returnData
       );
       if (amounts && amounts.length >= 2 && amounts[1] > 0n) {
+        const price = Number(amounts[1]) / Number(amounts[0]);
+        logInfo(
+          `${tokenB.symbol}->${tokenA.symbol} on ${
+            this.dex.name
+          } (${pairAddress}): ${price.toFixed(6)}`
+        );
         quotes.push({
-          dexName: this.dex.name,
+          dexName: `${this.dex.name} (0.30%)`,
           inputAmount: amounts[0],
           outputAmount: amounts[1],
           path: [tokenB.address, tokenA.address],
           estimatedGas: BigInt(300000),
+          poolAddress: pairAddress,
         });
       }
     }

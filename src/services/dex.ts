@@ -31,6 +31,14 @@ export class DexService {
     }
   }
 
+  getHandlers(): Map<string, UniswapV2Handler | UniswapV3Handler> {
+    return this.handlers;
+  }
+
+  getDexByName(name: string): DEXProtocol | undefined {
+    return SUPPORTED_DEXES.find((dex) => dex.name === name);
+  }
+
   async findArbitrage(
     tokenA: Token,
     tokenB: Token,
